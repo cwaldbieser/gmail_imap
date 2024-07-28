@@ -3,11 +3,11 @@
 import datetime
 import json
 import pathlib
-import sys
 import urllib.parse
 
 import imap_tools
 import requests
+import tomllib
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
 
@@ -18,8 +18,14 @@ REDIRECT_URI = "https://oauth2.dance/"
 
 
 def main():
+    """
+    The main program entrypoint.
+    """
+    config = get_config()
+    imap_config = config.get("imap", {})
+    email = imap_config.get("email")
     expired = True
-    client_id, client_secret = get_client_config()
+    client_id, client_secret = get_client_config(imap_config)
     token_path = pathlib.Path("~/.gmail_tui/access-tokens.json").expanduser()
     if token_path.exists():
         with open(token_path, "r") as f:
@@ -30,7 +36,9 @@ def main():
         if dt < dt_expires:
             expired = False
         else:
-            new_tokens = refresh_tokens(client_id, client_secret, tokens["refresh_token"])
+            new_tokens = refresh_tokens(
+                client_id, client_secret, tokens["refresh_token"]
+            )
             tokens.update(new_tokens)
             print(tokens)
             expired = False
@@ -52,14 +60,31 @@ def main():
     tokens["expires_at"] = expires_at.isoformat()
     with open(token_path, "w") as f:
         json.dump(tokens, f, indent=4)
-    user = input("email: ")
-    do_imap(user, access_token)
+    if email is None:
+        email = input("email: ")
+    do_imap(email, access_token)
 
 
-def get_client_config():
-    with open(
-        pathlib.Path("~/.gmail_tui/gmail-imap-client-secret.json").expanduser()
-    ) as f:
+def get_config():
+    """
+    Get the main config.
+    """
+    config_path = pathlib.Path("~/.gmail_tui/conf.toml").expanduser()
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+    return config
+
+
+def get_client_config(imap_config):
+    """
+    Get Oauth2 Client ID and Client Secret.
+    """
+    default_credentials_file = "~/.gmail_tui/gmail-imap-client-secret.json"
+    credentials_file = imap_config.get(
+        "credentials_file", default_credentials_file
+    )
+    credentials_file = pathlib.Path(credentials_file).expanduser()
+    with open(credentials_file) as f:
         o = json.load(f)
     web = o["web"]
     client_id = web["client_id"]
