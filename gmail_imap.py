@@ -3,6 +3,7 @@
 import datetime
 import json
 import pathlib
+import sys
 import urllib.parse
 
 import imap_tools
@@ -18,6 +19,7 @@ REDIRECT_URI = "https://oauth2.dance/"
 
 def main():
     expired = True
+    client_id, client_secret = get_client_config()
     token_path = pathlib.Path("~/.gmail_tui/access-tokens.json").expanduser()
     if token_path.exists():
         with open(token_path, "r") as f:
@@ -27,15 +29,12 @@ def main():
         dt = datetime.datetime.today().replace(tzinfo=tzlocal())
         if dt < dt_expires:
             expired = False
-
+        else:
+            new_tokens = refresh_tokens(client_id, client_secret, tokens["refresh_token"])
+            tokens.update(new_tokens)
+            print(tokens)
+            expired = False
     if expired:
-        with open(
-            pathlib.Path("~/.gmail_tui/gmail-imap-client-secret.json").expanduser()
-        ) as f:
-            o = json.load(f)
-        web = o["web"]
-        client_id = web["client_id"]
-        client_secret = web["client_secret"]
         url = get_access_token_url(client_id)
         print(f"Browse to {url} to obtain an access token.")
         authorization_code = input("Authorization code: ")
@@ -55,6 +54,28 @@ def main():
         json.dump(tokens, f, indent=4)
     user = input("email: ")
     do_imap(user, access_token)
+
+
+def get_client_config():
+    with open(
+        pathlib.Path("~/.gmail_tui/gmail-imap-client-secret.json").expanduser()
+    ) as f:
+        o = json.load(f)
+    web = o["web"]
+    client_id = web["client_id"]
+    client_secret = web["client_secret"]
+    return client_id, client_secret
+
+
+def refresh_tokens(client_id, client_secret, refresh_token):
+    params = {}
+    params["client_id"] = client_id
+    params["client_secret"] = client_secret
+    params["refresh_token"] = refresh_token
+    params["grant_type"] = "refresh_token"
+    request_url = accounts_url("o/oauth2/token")
+    response = requests.post(request_url, data=params)
+    return response.json()
 
 
 def do_imap(user, access_token):
