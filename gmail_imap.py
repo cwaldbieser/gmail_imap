@@ -1,13 +1,14 @@
 #! /usr/bin/env python
 
-import imaplib
+import datetime
 import json
 import pathlib
-import ssl
 import urllib.parse
 
 import imap_tools
 import requests
+from dateutil.parser import parse as parse_date
+from dateutil.tz import tzlocal
 
 # The URL root for accessing Google Accounts.
 GOOGLE_ACCOUNTS_BASE_URL = "https://accounts.google.com"
@@ -16,34 +17,44 @@ REDIRECT_URI = "https://oauth2.dance/"
 
 
 def main():
-    with open(
-        pathlib.Path("~/.gmail_tui/gmail-imap-client-secret.json").expanduser()
-    ) as f:
-        o = json.load(f)
-    web = o["web"]
-    client_id = web["client_id"]
-    client_secret = web["client_secret"]
-    url = get_access_token_url(client_id)
-    print(f"Browse to {url} to obtain an access token.")
-    authorization_code = input("Authorization code: ")
-    print(authorization_code)
-    tokens = get_tokens(client_id, client_secret, authorization_code)
+    expired = True
+    token_path = pathlib.Path("~/.gmail_tui/access-tokens.json").expanduser()
+    if token_path.exists():
+        with open(token_path, "r") as f:
+            tokens = json.load(f)
+        expires_at = tokens["expires_at"]
+        dt_expires = parse_date(expires_at)
+        dt = datetime.datetime.today().replace(tzinfo=tzlocal())
+        if dt < dt_expires:
+            expired = False
+
+    if expired:
+        with open(
+            pathlib.Path("~/.gmail_tui/gmail-imap-client-secret.json").expanduser()
+        ) as f:
+            o = json.load(f)
+        web = o["web"]
+        client_id = web["client_id"]
+        client_secret = web["client_secret"]
+        url = get_access_token_url(client_id)
+        print(f"Browse to {url} to obtain an access token.")
+        authorization_code = input("Authorization code: ")
+        print(authorization_code)
+        tokens = get_tokens(client_id, client_secret, authorization_code)
     refresh_token = tokens["refresh_token"]
     access_token = tokens["access_token"]
     expires_in = tokens["expires_in"]
+    dt = datetime.datetime.today().replace(tzinfo=tzlocal())
+    expires_at = dt + datetime.timedelta(seconds=expires_in)
     print(f"Refresh Token: {refresh_token}")
     print(f"Access Token: {access_token}")
     print(f"Access Token Expiration Seconds: {expires_in}")
+    print(f"Access token expires at: {expires_at.isoformat()}")
+    tokens["expires_at"] = expires_at.isoformat()
+    with open(token_path, "w") as f:
+        json.dump(tokens, f, indent=4)
     user = input("email: ")
     do_imap(user, access_token)
-
-
-# def generate_oath2string(user, access_token):
-#     """
-#     Generate string used for SASL authentication.
-#     """
-#     auth_string = f"user={user}\1auth=Bearer {access_token}\1\1"
-#     return auth_string
 
 
 def do_imap(user, access_token):
