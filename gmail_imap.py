@@ -108,7 +108,7 @@ def do_imap(user, access_token):
     Do IMAP stuff.
     """
     with imap_tools.MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
-        for msg in mailbox.fetch():
+        for msg in mailbox.fetch(reverse=True, headers_only=True, mark_seen=False):
             print(msg.date, msg.subject, len(msg.text or msg.html))
 
 
