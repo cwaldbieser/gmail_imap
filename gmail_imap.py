@@ -1,9 +1,12 @@
 #! /usr/bin/env python
 
+import imaplib
 import json
 import pathlib
+import ssl
 import urllib.parse
 
+import imap_tools
 import requests
 
 # The URL root for accessing Google Accounts.
@@ -31,6 +34,25 @@ def main():
     print(f"Refresh Token: {refresh_token}")
     print(f"Access Token: {access_token}")
     print(f"Access Token Expiration Seconds: {expires_in}")
+    user = input("email: ")
+    do_imap(user, access_token)
+
+
+# def generate_oath2string(user, access_token):
+#     """
+#     Generate string used for SASL authentication.
+#     """
+#     auth_string = f"user={user}\1auth=Bearer {access_token}\1\1"
+#     return auth_string
+
+
+def do_imap(user, access_token):
+    """
+    Do IMAP stuff.
+    """
+    with imap_tools.MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+        for msg in mailbox.fetch():
+            print(msg.date, msg.subject, len(msg.text or msg.html))
 
 
 def get_tokens(client_id, client_secret, authorization_code):
