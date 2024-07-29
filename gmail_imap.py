@@ -3,13 +3,17 @@
 import datetime
 import json
 import pathlib
+import sys
+import time
 import urllib.parse
+from collections import OrderedDict
+from io import StringIO
 
-import imap_tools
 import requests
 import tomllib
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
+from imap_tools import MailBox
 
 # The URL root for accessing Google Accounts.
 GOOGLE_ACCOUNTS_BASE_URL = "https://accounts.google.com"
@@ -34,13 +38,16 @@ def main():
         dt_expires = parse_date(expires_at)
         dt = datetime.datetime.today().replace(tzinfo=tzlocal())
         if dt < dt_expires:
+            print("Access token is still valid.", file=sys.stderr)
             expired = False
         else:
+            print("Refreshing tokens ...", file=sys.stderr)
             new_tokens = refresh_tokens(
                 client_id, client_secret, tokens["refresh_token"]
             )
             tokens.update(new_tokens)
             print(tokens)
+            print("Tokens refreshed.", file=sys.stderr)
             expired = False
     if expired:
         url = get_access_token_url(client_id)
@@ -51,10 +58,12 @@ def main():
     refresh_token = tokens["refresh_token"]
     access_token = tokens["access_token"]
     expires_in = tokens["expires_in"]
-    dt = datetime.datetime.today().replace(tzinfo=tzlocal())
+    issued_at = tokens["issued_at"]
+    dt = parse_date(issued_at)
     expires_at = dt + datetime.timedelta(seconds=expires_in)
     print(f"Refresh Token: {refresh_token}")
     print(f"Access Token: {access_token}")
+    print(f"Access Token issued at: {issued_at}")
     print(f"Access Token Expiration Seconds: {expires_in}")
     print(f"Access token expires at: {expires_at.isoformat()}")
     tokens["expires_at"] = expires_at.isoformat()
@@ -80,9 +89,7 @@ def get_client_config(imap_config):
     Get Oauth2 Client ID and Client Secret.
     """
     default_credentials_file = "~/.gmail_tui/gmail-imap-client-secret.json"
-    credentials_file = imap_config.get(
-        "credentials_file", default_credentials_file
-    )
+    credentials_file = imap_config.get("credentials_file", default_credentials_file)
     credentials_file = pathlib.Path(credentials_file).expanduser()
     with open(credentials_file) as f:
         o = json.load(f)
@@ -100,16 +107,117 @@ def refresh_tokens(client_id, client_secret, refresh_token):
     params["grant_type"] = "refresh_token"
     request_url = accounts_url("o/oauth2/token")
     response = requests.post(request_url, data=params)
-    return response.json()
+    tokens = response.json()
+    issued_at = datetime.datetime.today().replace(tzinfo=tzlocal())
+    tokens["issued_at"] = issued_at.isoformat()
+    return tokens
+
+
+def parse_fetch_google_ids_response(response):
+    """
+    Parse fetch response.
+    """
+    status = response[0]
+    if status != "OK":
+        return []
+    pieces = response[1]
+    buffer = StringIO()
+    results = {}
+    for piece in pieces:
+        buffer.write(piece.decode())
+        value = buffer.getvalue()
+        if value.endswith(")"):
+            uid, gmessage_id, gthread_id = parse_g_result(value)
+            results[uid] = (gmessage_id, gthread_id)
+            buffer.seek(0)
+            buffer.truncate()
+    return results
+
+
+def parse_g_result(value):
+    """
+    Parse an individual fetch result for Google message and thread IDs.
+    """
+    parts = value.split(" ", 1)
+    components = parts[1][1:-1].split()
+    part_map = {}
+    for n in range(1, len(components), 2):
+        part_map[components[n - 1]] = components[n]
+    return part_map["UID"], part_map["X-GM-MSGID"], part_map["X-GM-THRID"]
 
 
 def do_imap(user, access_token):
     """
     Do IMAP stuff.
     """
-    with imap_tools.MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
-        for msg in mailbox.fetch(reverse=True, headers_only=True, mark_seen=False):
-            print(msg.date, msg.subject, len(msg.text or msg.html))
+    with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+        messages = OrderedDict()
+        for msg in mailbox.fetch(
+            reverse=True, headers_only=True, mark_seen=False, bulk=True
+        ):
+            # message_id = msg.headers.get("message-id")
+            print(msg.uid, msg.date, msg.subject)
+            messages[msg.uid] = dict(
+                date=msg.date, from_=msg.from_, subject=msg.subject
+            )
+        uids = list(int(uid) for uid in messages.keys())
+        max_uid = max(uids)
+        min_uid = min(uids)
+        import pprint
+
+        client = mailbox.client
+        response = client.uid(
+            "fetch", f"{min_uid}:{max_uid}", "(X-GM-MSGID X-GM-THRID)"
+        )
+        results = parse_fetch_google_ids_response(response)
+        for uid, (gmessage_id, gthread_id) in results.items():
+            msg = messages.get(uid)
+            msg["gmessage_id"] = gmessage_id
+            msg["gthread_id"] = gthread_id
+        pprint.pprint(messages)
+
+        # flags = (imap_tools.MailMessageFlags.FLAGGED,)
+        # result = mailbox.flag("81180", flags, True)
+        # print(f"flag() result: {result}")
+        # result = mailbox.copy(["81180"], "[Gmail]/Starred")
+        # result = mailbox.copy(["81180"], "[Gmail]/Important")
+        # print(f"copy() result: {result}")
+        # pprint.pprint(mailbox.folder.list())
+
+        # import pprint
+        # client = mailbox.client
+        # response = client.fetch(b"1:20", "(X-GM-MSGID X-GM-THRID)")
+        # pprint.pprint(response)
+
+        # import pprint
+        # client = mailbox.client
+        # response = client.uid("fetch", "81207:*", "(X-GM-MSGID X-GM-THRID)")
+        # pprint.pprint(response)
+
+        # Full GMail search - works
+        # import pprint
+        # result = mailbox.uids("X-GM-RAW in:starred")
+        # pprint.pprint(result)
+
+        try:
+            while True:
+                with mailbox.idle as idle:
+                    responses = idle.poll(timeout=60)
+                if responses:
+                    print(f"responses: {responses}\n")
+                    # for msg in mailbox.fetch(
+                    #     A(seen=False),
+                    #     reverse=True,
+                    #     mark_seen=False,
+                    #     headers_only=True,
+                    #     bulk=False,
+                    # ):
+                    #     print(msg.date, msg.subject)
+                else:
+                    print("no any updates")
+                time.sleep(2)
+        except KeyboardInterrupt:
+            pass
 
 
 def get_tokens(client_id, client_secret, authorization_code):
@@ -129,7 +237,10 @@ def get_tokens(client_id, client_secret, authorization_code):
     response = requests.post(request_url, data=params)
     print(f"status: {response.status_code}")
     print(f"text: {response.text}")
-    return response.json()
+    tokens = response.json()
+    issued_at = datetime.datetime.today().replace(tzinfo=tzlocal())
+    tokens["issued_at"] = issued_at.isoformat()
+    return tokens
 
 
 def accounts_url(command):
