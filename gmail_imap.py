@@ -8,6 +8,7 @@ import time
 import urllib.parse
 from collections import OrderedDict
 from io import StringIO
+from itertools import islice
 
 import requests
 import tomllib
@@ -146,35 +147,61 @@ def parse_g_result(value):
     return part_map["UID"], part_map["X-GM-MSGID"], part_map["X-GM-THRID"]
 
 
-def do_imap(user, access_token):
+def batched(iterable, n):
+    "Batch data into tuples of length n. The last batch may be shorter."
+    # batched('ABCDEFG', 3) --> ABC DEF G
+    if n < 1:
+        raise ValueError("n must be at least one")
+    it = iter(iterable)
+    while batch := tuple(islice(it, n)):
+        yield batch
+
+
+def fetch_gmail_messages_in_batches(mailbox, batch_size=100, headers_only=True, limit=None):
     """
-    Do IMAP stuff.
+    Fetch messages in batches and decorate with Google IDs.
     """
-    with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+    msg_generator = mailbox.fetch(
+        reverse=True,
+        headers_only=headers_only,
+        mark_seen=False,
+        bulk=batch_size,
+        limit=limit,
+    )
+    for msg_batch in batched(msg_generator, batch_size):
         messages = OrderedDict()
-        for msg in mailbox.fetch(
-            reverse=True, headers_only=True, mark_seen=False, bulk=True
-        ):
-            # message_id = msg.headers.get("message-id")
-            print(msg.uid, msg.date, msg.subject)
-            messages[msg.uid] = dict(
-                date=msg.date, from_=msg.from_, subject=msg.subject
-            )
+        for msg in msg_batch:
+            messages[msg.uid] = dict(msg=msg)
         uids = list(int(uid) for uid in messages.keys())
         max_uid = max(uids)
         min_uid = min(uids)
-        import pprint
-
         client = mailbox.client
         response = client.uid(
             "fetch", f"{min_uid}:{max_uid}", "(X-GM-MSGID X-GM-THRID)"
         )
         results = parse_fetch_google_ids_response(response)
         for uid, (gmessage_id, gthread_id) in results.items():
-            msg = messages.get(uid)
-            msg["gmessage_id"] = gmessage_id
-            msg["gthread_id"] = gthread_id
-        pprint.pprint(messages)
+            msg_wrapper = messages.get(uid)
+            if msg_wrapper:
+                msg_wrapper["gmessage_id"] = gmessage_id
+                msg_wrapper["gthread_id"] = gthread_id
+        for msg_wrapper in messages.values():
+            msg = msg_wrapper["msg"]
+            gmessage_id = msg_wrapper.get("gmessage_id")
+            gthread_id = msg_wrapper["gthread_id"]
+            yield gmessage_id, gthread_id, msg
+
+
+def do_imap(user, access_token):
+    """
+    Do IMAP stuff.
+    """
+    with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+        for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
+            mailbox, batch_size=500, headers_only=True, limit=500
+        ):
+            print(gmessage_id, gthread_id, msg.uid, msg.date, msg.subject)
+            print(msg.flags)
 
         # flags = (imap_tools.MailMessageFlags.FLAGGED,)
         # result = mailbox.flag("81180", flags, True)
