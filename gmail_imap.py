@@ -1,10 +1,16 @@
 #! /usr/bin/env python
 
 import datetime
+import http.server
+import imaplib
 import json
 import pathlib
+import socket
+import socketserver
 import sys
 import time
+import traceback
+import urllib
 import urllib.parse
 from collections import OrderedDict
 from io import StringIO
@@ -14,12 +20,32 @@ import requests
 import tomllib
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
-from imap_tools import MailBox
+from imap_tools import A, MailBox, MailboxLoginError, MailboxLogoutError
 
 # The URL root for accessing Google Accounts.
 GOOGLE_ACCOUNTS_BASE_URL = "https://accounts.google.com"
 # Hardcoded redirect URI.
-REDIRECT_URI = "https://oauth2.dance/"
+# REDIRECT_URI = "https://oauth2.dance/"
+REDIRECT_URI = "http://localhost:10077/"
+
+
+class Server(socketserver.TCPServer):
+
+    serving = False
+    captured_path = None
+    # Avoid "address already used" error when frequently restarting the script
+    allow_reuse_address = True
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200, "OK")
+        self.end_headers()
+        self.wfile.write(
+            "Authentication code has been delivered to the application.".encode("utf-8")
+        )
+        self.server.captured_path = self.path
+        self.server.serving = False
 
 
 def main():
@@ -53,7 +79,8 @@ def main():
     if expired:
         url = get_access_token_url(client_id)
         print(f"Browse to {url} to obtain an access token.")
-        authorization_code = input("Authorization code: ")
+        # authorization_code = input("Authorization code: ")
+        authorization_code = get_authorization_code_from_web_server()
         print(authorization_code)
         tokens = get_tokens(client_id, client_secret, authorization_code)
     refresh_token = tokens["refresh_token"]
@@ -73,6 +100,22 @@ def main():
     if email is None:
         email = input("email: ")
     do_imap(email, access_token)
+
+
+def get_authorization_code_from_web_server():
+    """
+    Create a web server on localhost:10077.
+    Wait for authorization code.
+    """
+    with Server(("", 10077), Handler) as httpd:
+        httpd.serving = True
+        while httpd.serving:
+            httpd.handle_request()
+    print(f"Captured path: {httpd.captured_path}")
+    p = urllib.parse.urlparse(httpd.captured_path)
+    qs = urllib.parse.parse_qs(p.query)
+    access_code = qs["code"][0]
+    return access_code
 
 
 def get_config():
@@ -157,7 +200,9 @@ def batched(iterable, n):
         yield batch
 
 
-def fetch_gmail_messages_in_batches(mailbox, batch_size=100, headers_only=True, limit=None):
+def fetch_gmail_messages_in_batches(
+    mailbox, batch_size=100, headers_only=True, limit=None
+):
     """
     Fetch messages in batches and decorate with Google IDs.
     """
@@ -196,12 +241,13 @@ def do_imap(user, access_token):
     """
     Do IMAP stuff.
     """
-    with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
-        for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
-            mailbox, batch_size=500, headers_only=True, limit=500
-        ):
-            print(gmessage_id, gthread_id, msg.uid, msg.date, msg.subject)
-            print(msg.flags)
+    if False:
+        with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+            for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
+                mailbox, batch_size=500, headers_only=True, limit=500
+            ):
+                print(gmessage_id, gthread_id, msg.uid, msg.date, msg.subject)
+                print(msg.flags)
 
         # flags = (imap_tools.MailMessageFlags.FLAGGED,)
         # result = mailbox.flag("81180", flags, True)
@@ -225,6 +271,39 @@ def do_imap(user, access_token):
         # import pprint
         # result = mailbox.uids("X-GM-RAW in:starred")
         # pprint.pprint(result)
+
+    done = False
+    while not done:
+        connection_start_time = time.monotonic()
+        connection_live_time = 0.0
+        try:
+            print("Connecting to GMail IMAP ...")
+            with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+                print("@@ new connection", time.asctime())
+                while connection_live_time < 29 * 60:
+                    try:
+                        responses = mailbox.idle.wait(timeout=3 * 60)
+                        print(time.asctime(), "IDLE responses:", responses)
+                        if responses:
+                            for msg in mailbox.fetch(A(seen=False), mark_seen=False):
+                                print("->", msg.date, msg.subject)
+                    except KeyboardInterrupt:
+                        print("~KeyboardInterrupt")
+                        done = True
+                        break
+                    connection_live_time = time.monotonic() - connection_start_time
+        except (
+            TimeoutError,
+            ConnectionError,
+            imaplib.IMAP4.abort,
+            MailboxLoginError,
+            MailboxLogoutError,
+            socket.herror,
+            socket.gaierror,
+            socket.timeout,
+        ) as e:
+            print(f"## Error\n{e}\n{traceback.format_exc()}\nreconnect in a minute...")
+            time.sleep(60)
 
         try:
             while True:
