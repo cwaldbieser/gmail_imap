@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 
+import argparse
 import datetime
 import http.server
 import imaplib
@@ -48,7 +49,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.serving = False
 
 
-def main():
+def main(args):
     """
     The main program entrypoint.
     """
@@ -58,7 +59,7 @@ def main():
     expired = True
     client_id, client_secret = get_client_config(imap_config)
     token_path = pathlib.Path("~/.gmail_tui/access-tokens.json").expanduser()
-    if token_path.exists():
+    if (not args.reauthenticate) and token_path.exists():
         with open(token_path, "r") as f:
             tokens = json.load(f)
         expires_at = tokens["expires_at"]
@@ -99,7 +100,10 @@ def main():
         json.dump(tokens, f, indent=4)
     if email is None:
         email = input("email: ")
-    do_imap(email, access_token)
+    try:
+        do_imap(email, access_token)
+    except imaplib.IMAP4.error as ex:
+        print(ex.args[0])
 
 
 def get_authorization_code_from_web_server():
@@ -386,4 +390,11 @@ def get_access_token_url(client_id):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser("IMAP test for GMail")
+    parser.add_argument(
+        "-r",
+        "--reauthenticate",
+        action="store_true",
+        help="Force Oauth2 reauthentication.")
+    args = parser.parse_args()
+    main(args)
