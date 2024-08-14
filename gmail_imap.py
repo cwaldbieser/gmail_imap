@@ -22,6 +22,7 @@ import tomllib
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
 from imap_tools import A, MailBox, MailboxLoginError, MailboxLogoutError
+from parsers import imap_response_parser
 
 # The URL root for accessing Google Accounts.
 GOOGLE_ACCOUNTS_BASE_URL = "https://accounts.google.com"
@@ -54,7 +55,7 @@ def main(args):
     The main program entrypoint.
     """
     config = get_config()
-    imap_config = config.get("imap", {})
+    imap_config = config.get("oauth2", {})
     email = imap_config.get("email")
     expired = True
     client_id, client_secret = get_client_config(imap_config)
@@ -245,13 +246,32 @@ def do_imap(user, access_token):
     """
     Do IMAP stuff.
     """
-    if False:
-        with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
-            for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
-                mailbox, batch_size=500, headers_only=True, limit=500
-            ):
-                print(gmessage_id, gthread_id, msg.uid, msg.date, msg.subject)
-                print(msg.flags)
+    with MailBox("imap.gmail.com").xoauth2(user, access_token) as mailbox:
+        # for item in mailbox.folder.list():
+        #     print(item)
+        # print("")
+        uids = []
+        for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
+            mailbox, batch_size=500, headers_only=True, limit=500
+        ):
+            print(gmessage_id, gthread_id, msg.uid, msg.date, msg.flags)
+            print(msg.subject)
+            print("")
+            uids.append(int(msg.uid))
+
+        min_uid = min(uids)
+        max_uid = max(uids)
+        client = mailbox.client
+        response = client.uid(
+            "fetch", f"{min_uid}:{max_uid}", "(X-GM-MSGID X-GM-THRID X-GM-LABELS)"
+        )
+        response_code, lines = response
+        print(f"response code: {response_code}")
+        for line in lines:
+            # msg_info = parse_response_line(line)
+            # print(msg_info)
+            p = imap_response_parser(line.decode()).line()
+            print(p)
 
         # flags = (imap_tools.MailMessageFlags.FLAGGED,)
         # result = mailbox.flag("81180", flags, True)
@@ -276,6 +296,7 @@ def do_imap(user, access_token):
         # result = mailbox.uids("X-GM-RAW in:starred")
         # pprint.pprint(result)
 
+    sys.exit(0)
     done = False
     while not done:
         connection_start_time = time.monotonic()
@@ -328,6 +349,30 @@ def do_imap(user, access_token):
                 time.sleep(2)
         except KeyboardInterrupt:
             pass
+
+
+def parse_response_line(ascii7_line):
+    """
+    Parse a 7-bit ASCII encoded response line.
+    """
+    line = ascii7_line.decode()
+    # Line should be a message number followed by a parethesized list.
+    parts = line.split(maxsplit=1)
+    message_number = int(parts[0])
+    plist = parts[1]
+    items = parse_plist(plist)
+    # TODO
+
+
+def parse_plist(plist):
+    """
+    Parse a string representing a parenthesized list.
+    """
+    plist = plist.strip()
+    if not plist.startswith("("):
+        raise Exception("P-list does not start with '('.")
+    if not plist.endswith(")"):
+        raise Exception("P-list does not end with ')'.")
 
 
 def get_tokens(client_id, client_secret, authorization_code):
@@ -395,6 +440,7 @@ if __name__ == "__main__":
         "-r",
         "--reauthenticate",
         action="store_true",
-        help="Force Oauth2 reauthentication.")
+        help="Force Oauth2 reauthentication.",
+    )
     args = parser.parse_args()
     main(args)

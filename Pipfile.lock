@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "c1a64981c0368a6f95c7e068fb5b6e28e1345e96f19ff74a2be8f197ccd21d70"
+            "sha256": "07fcfd35b2ca24e578bb8741304cac723efb7dde090c08f955643c5b223a1f85"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -130,11 +130,19 @@
         },
         "imap-tools": {
             "hashes": [
-                "sha256:2c8208bec28a4b47fa3146f7e94862e58ed00de77131e44325527c0cbe6124b3",
-                "sha256:bee29ab3adb21e57dffb9d7966b1169e6ffc66b5f0e7dd26bfb4bf9a95e5e028"
+                "sha256:218ea6495d73275ecc2fa4a34717c137bacf2c4a3d34c9d10a9581a6af1ac94f",
+                "sha256:4c31e9df1d28149436a86871cf84a0b37221a91521fc1a57897e0a152ee3f6d1"
             ],
             "index": "pypi",
-            "version": "==1.7.0"
+            "version": "==1.7.2"
+        },
+        "parsley": {
+            "hashes": [
+                "sha256:9444278d47161d5f2be76a767809a3cbe6db4db822f46a4fd7481d4057208d41",
+                "sha256:c3bc417b8c7e3a96c87c0f2f751bfd784ed5156ffccebe2f84330df5685f8dc3"
+            ],
+            "index": "pypi",
+            "version": "==1.3"
         },
         "python-dateutil": {
             "hashes": [
