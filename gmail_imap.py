@@ -10,6 +10,7 @@ import socket
 import socketserver
 import sys
 import time
+import tomllib
 import traceback
 import urllib
 import urllib.parse
@@ -18,10 +19,10 @@ from io import StringIO
 from itertools import islice
 
 import requests
-import tomllib
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
 from imap_tools import A, MailBox, MailboxLoginError, MailboxLogoutError
+
 from parsers import imap_response_parser
 
 # The URL root for accessing Google Accounts.
@@ -206,12 +207,13 @@ def batched(iterable, n):
 
 
 def fetch_gmail_messages_in_batches(
-    mailbox, batch_size=100, headers_only=True, limit=None
+    mailbox, criteria="All", batch_size=100, headers_only=True, limit=None
 ):
     """
     Fetch messages in batches and decorate with Google IDs.
     """
     msg_generator = mailbox.fetch(
+        criteria=criteria,
         reverse=True,
         headers_only=headers_only,
         mark_seen=False,
@@ -250,6 +252,10 @@ def do_imap(user, access_token):
         # for item in mailbox.folder.list():
         #     print(item)
         # print("")
+
+        print("======================================")
+        print("Basic fetch all messages.")
+        print("======================================")
         uids = []
         for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
             mailbox, batch_size=500, headers_only=True, limit=500
@@ -259,6 +265,10 @@ def do_imap(user, access_token):
             print("")
             uids.append(int(msg.uid))
 
+        print("=================================================")
+        print("Fetch messages with Google extension attributes")
+        print("=================================================")
+        uids.sort()
         min_uid = min(uids)
         max_uid = max(uids)
         client = mailbox.client
@@ -268,11 +278,38 @@ def do_imap(user, access_token):
         response_code, lines = response
         print(f"response code: {response_code}")
         for line in lines:
-            # msg_info = parse_response_line(line)
-            # print(msg_info)
             p = imap_response_parser(line.decode()).line()
             print(p)
 
+        print("")
+        print("=================================================")
+        print("Fetch selected UIDs")
+        print("=================================================")
+        print(f"UIDs: {uids}")
+        selected_uids = [9, 81200, 81201, 81203, 81207]
+        print(f"SELECTED UIDS: {selected_uids}")
+        selected_uids = compress_uids(uids, selected_uids)
+        print(f"COMPRESSED UIDS: {selected_uids}")
+        uid_set = uids_to_criteria(selected_uids)
+        print(f"UID SET: {uid_set}")
+        criteria = A(uid=uid_set)
+        print(f"CRITERIA: {criteria}")
+        for msg in mailbox.fetch(criteria=criteria):
+            print(msg.uid, msg.date, msg.flags)
+            print(msg.subject)
+            print("")
+
+        print("")
+        print("=================================================")
+        print("Fetch messages with Google extension criteria")
+        print("=================================================")
+        criteria = 'X-GM-RAW "has:attachment"'
+        for gmessage_id, gthread_id, msg in fetch_gmail_messages_in_batches(
+            mailbox, criteria=criteria, batch_size=500, headers_only=True, limit=500
+        ):
+            print(gmessage_id, gthread_id, msg.uid, msg.date, msg.flags)
+            print(msg.subject)
+            print("")
         # flags = (imap_tools.MailMessageFlags.FLAGGED,)
         # result = mailbox.flag("81180", flags, True)
         # print(f"flag() result: {result}")
@@ -351,17 +388,54 @@ def do_imap(user, access_token):
             pass
 
 
-def parse_response_line(ascii7_line):
+def compress_uids(all_uids, selected_uids):
     """
-    Parse a 7-bit ASCII encoded response line.
+    Compress a sorted selection of UIDs into ranges given the complete sorted
+    sequence of UIDs.
     """
-    line = ascii7_line.decode()
-    # Line should be a message number followed by a parethesized list.
-    parts = line.split(maxsplit=1)
-    message_number = int(parts[0])
-    plist = parts[1]
-    items = parse_plist(plist)
-    # TODO
+    # selected_uids = [9, 81200, 81201, 81203, 81207]
+    results = []
+    selected_uids = selected_uids[:]
+    range_max_uid = selected_uids.pop()
+    range_min_uid = None
+    current_uid = range_max_uid
+    pos1 = all_uids.index(current_uid)
+    while len(selected_uids):
+        candidate_uid = selected_uids.pop()
+        # Are the uids between candidate and current?
+        pos0 = all_uids.index(candidate_uid)
+        if pos0 + 1 == pos1:
+            # No in-between UIDs
+            range_min_uid = candidate_uid
+            pos1 = pos0
+        else:
+            # There is at least 1 in-between UID we don't want to include.
+            item = uid_or_range(range_min_uid, range_max_uid)
+            results.append(item)
+            range_max_uid = candidate_uid
+            pos1 = pos0
+            range_min_uid = None
+    if range_max_uid is not None:
+        item = uid_or_range(range_min_uid, range_max_uid)
+        results.append(item)
+    return results
+
+
+def uid_or_range(min_uid, max_uid):
+    if min_uid is None:
+        return max_uid
+    else:
+        return (min_uid, max_uid)
+
+
+def uids_to_criteria(uids):
+    criteria = []
+    for item in uids:
+        if isinstance(item, tuple):
+            criteria.append(f"{str(item[0])}:{str(item[1])}")
+        else:
+            criteria.append(str(item))
+    return ",".join(criteria)
 
 
 def parse_plist(plist):
